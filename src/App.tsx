@@ -7,8 +7,13 @@ const HEART_PATH =
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const drawingRef = useRef(false);
+  const scratchReadyRef = useRef(false);
+  const audioUnlockedRef = useRef(false);
+
   const [revealed, setRevealed] = useState(false);
+  const [showCalendarButton, setShowCalendarButton] = useState(false);
 
   const heartPixelCountRef = useRef(0);
   const heartMaskRef = useRef<Uint8Array | null>(null);
@@ -152,9 +157,8 @@ export default function App() {
     ctx: CanvasRenderingContext2D,
     canvas: HTMLCanvasElement,
   ) => {
-    const rect = canvas.getBoundingClientRect();
-    const width = Math.round(rect.width);
-    const height = Math.round(rect.height);
+    const width = canvas.width;
+    const height = canvas.height;
 
     ctx.clearRect(0, 0, width, height);
     ctx.globalCompositeOperation = "source-over";
@@ -174,6 +178,8 @@ export default function App() {
     }
 
     ctx.restore();
+
+    scratchReadyRef.current = true;
   };
 
   useEffect(() => {
@@ -185,14 +191,12 @@ export default function App() {
 
     const setup = () => {
       const rect = canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
 
-      canvas.width = Math.round(rect.width * dpr);
-      canvas.height = Math.round(rect.height * dpr);
+      // Use CSS pixel dimensions directly for reliability on touch devices.
+      canvas.width = Math.round(rect.width);
+      canvas.height = Math.round(rect.height);
 
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.scale(dpr, dpr);
-
+      scratchReadyRef.current = false;
       drawScratchLayer(ctx, canvas);
     };
 
@@ -205,21 +209,55 @@ export default function App() {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
 
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+
     return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
     };
   };
 
+  const unlockAudio = async () => {
+    if (audioUnlockedRef.current) return;
+
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    try {
+      audio.muted = true;
+      await audio.play();
+      audio.pause();
+      audio.currentTime = 0;
+      audio.muted = false;
+      audioUnlockedRef.current = true;
+    } catch {
+      // Some browsers may still block this until a stronger gesture like a click.
+    }
+  };
+
+  const playRevealSong = async () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    try {
+      audio.currentTime = 0;
+      await audio.play();
+    } catch {
+      // If the browser still blocks playback, the rest of the reveal still works.
+    }
+  };
+
   const scratch = (x: number, y: number) => {
+    if (!scratchReadyRef.current) return;
+
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const heartPath = buildHeartPath(rect.width, rect.height);
+    const heartPath = buildHeartPath(canvas.width, canvas.height);
 
     ctx.save();
     ctx.clip(heartPath);
@@ -233,6 +271,7 @@ export default function App() {
   };
 
   const checkReveal = () => {
+    if (!scratchReadyRef.current) return;
     if (revealed) return;
 
     const canvas = canvasRef.current;
@@ -244,10 +283,8 @@ export default function App() {
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const width = Math.round(rect.width);
-    const height = Math.round(rect.height);
-
+    const width = canvas.width;
+    const height = canvas.height;
     const imageData = ctx.getImageData(0, 0, width, height).data;
 
     let clearedHeartPixels = 0;
@@ -263,9 +300,14 @@ export default function App() {
 
     const percent = (clearedHeartPixels / totalHeartPixels) * 100;
 
-    if (percent > 55) {
+    if (percent > 60) {
       setRevealed(true);
       fireConfetti();
+      playRevealSong();
+
+      window.setTimeout(() => {
+        setShowCalendarButton(true);
+      }, 450);
     }
   };
 
@@ -297,37 +339,91 @@ export default function App() {
     frame();
   };
 
-  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (revealed) return;
+  const handlePointerDown = async (
+    e: React.PointerEvent<HTMLCanvasElement>,
+  ) => {
+    if (revealed || !scratchReadyRef.current) return;
+
+    e.preventDefault();
     drawingRef.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+
+    await unlockAudio();
+
     const { x, y } = getPoint(e);
     scratch(x, y);
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!drawingRef.current || revealed) return;
+
+    e.preventDefault();
     const { x, y } = getPoint(e);
     scratch(x, y);
   };
 
-  const handlePointerUp = () => {
+  const handlePointerUp = (e?: React.PointerEvent<HTMLCanvasElement>) => {
     drawingRef.current = false;
+    if (e) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {}
+    }
   };
 
-  const handleAddToCalendar = () => {
-    const url =
-      "https://calendar.google.com/calendar/render?action=TEMPLATE" +
-      "&text=Rami%20%26%20Mamphara%20Wedding" +
-      "&dates=20260926/20260927" +
-      "&details=Save%20the%20date%20for%20our%20wedding";
+  const escapeICS = (value: string) =>
+    value
+      .replace(/\\/g, "\\\\")
+      .replace(/\n/g, "\\n")
+      .replace(/,/g, "\\,")
+      .replace(/;/g, "\\;");
 
-    window.open(url, "_blank");
+  const downloadICS = () => {
+    const ics = [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//Ramy and Mamphara//Save the Date//EN",
+      "CALSCALE:GREGORIAN",
+      "BEGIN:VEVENT",
+      "UID:ramy-mamphara-save-the-date-20260926@rmunion.co.za",
+      "DTSTAMP:20260311T000000Z",
+      "DTSTART;VALUE=DATE:20260926",
+      "DTEND;VALUE=DATE:20260927",
+      `SUMMARY:${escapeICS("Ramy & Mamphara Wedding")}`,
+      `DESCRIPTION:${escapeICS("Save the date for our wedding.")}`,
+      "END:VEVENT",
+      "END:VCALENDAR",
+    ].join("\r\n");
+
+    const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "ramy-mamphara-save-the-date.ics";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    URL.revokeObjectURL(url);
   };
 
   return (
     <main className="app">
       <section className="invite-shell">
         <article className="invite-card">
+          <audio
+            ref={audioRef}
+            preload="metadata"
+            src="public/audio/reveal-song.mp3"
+          />
+          <audio
+            ref={audioRef}
+            preload="auto"
+            playsInline
+            src="public/audio/reveal-song.mp3"
+          />
+
           <header className="header">
             <h1 className="title deboss">Save the Date</h1>
           </header>
@@ -359,7 +455,6 @@ export default function App() {
                 className="heart-svg"
                 aria-hidden="true"
               >
-                {/* shadow edge of deboss */}
                 <path
                   d={HEART_PATH}
                   fill="none"
@@ -367,8 +462,6 @@ export default function App() {
                   strokeWidth="2"
                   transform="translate(-0.6 -0.6)"
                 />
-
-                {/* highlight edge of deboss */}
                 <path
                   d={HEART_PATH}
                   fill="none"
@@ -376,8 +469,6 @@ export default function App() {
                   strokeWidth="1.6"
                   transform="translate(0.6 0.6)"
                 />
-
-                {/* main edge */}
                 <path
                   d={HEART_PATH}
                   fill="none"
@@ -395,16 +486,16 @@ export default function App() {
           <div className="action-area">
             {!revealed ? (
               <p className="helper">
-                Scratch the golden heart to reveal the surprise
+                Scratch the golden heart to reveal the date
               </p>
-            ) : (
+            ) : showCalendarButton ? (
               <button
                 className="calendar-btn calendar-btn-pop"
-                onClick={handleAddToCalendar}
+                onClick={downloadICS}
               >
                 Add to Calendar
               </button>
-            )}
+            ) : null}
           </div>
         </article>
       </section>

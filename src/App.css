@@ -90,6 +90,20 @@
   margin: auto;
 }
 
+.heart-stage,
+.scratch-canvas {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.scratch-canvas {
+  display: block;
+  touch-action: none;
+  z-index: 2;
+  cursor: pointer;
+}
+
 .heart-date-layer,
 .scratch-canvas,
 .heart-svg {

@@ -10,7 +10,7 @@ export default function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const drawingRef = useRef(false);
   const scratchReadyRef = useRef(false);
-  const audioUnlockedRef = useRef(false);
+  const songStartedRef = useRef(false);
 
   const [revealed, setRevealed] = useState(false);
   const [showCalendarButton, setShowCalendarButton] = useState(false);
@@ -218,33 +218,19 @@ export default function App() {
     };
   };
 
-  const unlockAudio = async () => {
-    if (audioUnlockedRef.current) return;
+  const startSongOnFirstScratch = async () => {
+    if (songStartedRef.current) return;
 
     const audio = audioRef.current;
     if (!audio) return;
 
     try {
-      audio.muted = true;
-      await audio.play();
-      audio.pause();
       audio.currentTime = 0;
-      audio.muted = false;
-      audioUnlockedRef.current = true;
-    } catch {
-      // Some browsers may still block this until a stronger gesture like a click.
-    }
-  };
-
-  const playRevealSong = async () => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    try {
-      audio.currentTime = 0;
+      audio.volume = 1;
       await audio.play();
-    } catch {
-      // If the browser still blocks playback, the rest of the reveal still works.
+      songStartedRef.current = true;
+    } catch (error) {
+      console.error("Audio play was blocked or failed:", error);
     }
   };
 
@@ -303,7 +289,6 @@ export default function App() {
     if (percent > 60) {
       setRevealed(true);
       fireConfetti();
-      playRevealSong();
 
       window.setTimeout(() => {
         setShowCalendarButton(true);
@@ -348,19 +333,26 @@ export default function App() {
     drawingRef.current = true;
     e.currentTarget.setPointerCapture(e.pointerId);
 
-    await unlockAudio();
+    await startSongOnFirstScratch();
 
     const { x, y } = getPoint(e);
     scratch(x, y);
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!drawingRef.current || revealed) return;
+    if (!drawingRef.current || revealed) return;
 
-    e.preventDefault();
-    const { x, y } = getPoint(e);
-    scratch(x, y);
-  };
+    e.preventDefault();
+
+    // FALLBACK: If the browser blocked the audio on the first tap, 
+    // try again while they are actively scratching.
+    if (!songStartedRef.current) {
+      startSongOnFirstScratch();
+    }
+
+    const { x, y } = getPoint(e);
+    scratch(x, y);
+  };
 
   const handlePointerUp = (e?: React.PointerEvent<HTMLCanvasElement>) => {
     drawingRef.current = false;
@@ -414,14 +406,9 @@ export default function App() {
         <article className="invite-card">
           <audio
             ref={audioRef}
-            preload="metadata"
-            src="public/audio/reveal-song.mp3"
-          />
-          <audio
-            ref={audioRef}
             preload="auto"
             playsInline
-            src="public/audio/reveal-song.mp3"
+            src="/audio/reveal-song.mp3"
           />
 
           <header className="header">
